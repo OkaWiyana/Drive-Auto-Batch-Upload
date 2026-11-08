@@ -1,0 +1,30 @@
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Google login session profile & state (PENTING: JANGAN DI-COMMIT)
+gdrive_profile/
+state.json
+session.json
+logs/
+*.log
+
+# Environment variables
+.env
+
+# PyInstaller / Build
+dist/
+build/
+*.spec
+
+# Temporary files
+temp_repo/
+scratch/
+.DS_Store
+Thumbs.db
