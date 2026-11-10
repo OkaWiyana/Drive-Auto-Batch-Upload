@@ -16,7 +16,6 @@ class Scheduler:
         self._next_worker_num = 1
 
     async def _worker(self, batch: dict, worker_id: int):
-        self.active_workers += 1
         page = None
         worker_name = f"Tab-{worker_id}"
 
@@ -53,6 +52,7 @@ class Scheduler:
 
                 batch = self.queue_manager.get_next_batch(worker_id=f"tab_{worker_id}")
                 if batch:
+                    self.active_workers += 1  # increment before create_task so the loop doesn't over-spawn
                     asyncio.create_task(self._worker(batch, worker_id))
                     spawned = True
 

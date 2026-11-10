@@ -11,11 +11,14 @@ class QueueManager:
     def __init__(self):
         self.state_file = config.STATE_FILE
         self.lock = threading.Lock()
+        self._known_files: set[str] | None = None
         self._ensure_state_file()
         self._reset_zombie_batches()
 
     def _reset_zombie_batches(self):
         """If the app crashed or restarted, reset processing/retrying batches to pending."""
+        if not getattr(config, "ZOMBIE_RECOVERY", True):
+            return
         with self.lock:
             state = self._load_state()
             zombies_fixed = 0
@@ -43,8 +46,21 @@ class QueueManager:
             return {"batches": {}}
 
     def _save_state(self, state: dict):
-        with open(self.state_file, 'w', encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
+        tmp = self.state_file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        import os, time
+        for _ in range(3):
+            try:
+                os.replace(tmp, self.state_file)
+                return
+            except PermissionError:
+                time.sleep(0.05)
+        # Fallback if Windows file lock persists
+        try:
+            os.replace(tmp, self.state_file)
+        except Exception:
+            with open(self.state_file, 'w', encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
 
     def add_files(self, files: list[Path]):
         """Add files to the queue, chunking them into batches."""
@@ -58,15 +74,14 @@ class QueueManager:
             if "batches" not in state:
                 state["batches"] = {}
 
-            # Gather all existing files to prevent duplicates
-            existing_files = set()
-            for b in state["batches"].values():
-                existing_files.update(b.get("files", []))
+            if self._known_files is None:
+                self._known_files = {f for b in state["batches"].values() for f in b.get("files", [])}
 
-            # Filter out files already queued
-            new_files_str = [str(p.resolve()) for p in files if str(p.resolve()) not in existing_files]
+            new_files_str = [str(p.resolve()) for p in files if str(p.resolve()) not in self._known_files]
             if not new_files_str:
                 return
+
+            self._known_files.update(new_files_str)
 
             # Check if there is an existing pending batch with space
             last_pending_id = None
@@ -153,8 +168,35 @@ class QueueManager:
     def reset_queue(self):
         """Clears all batches."""
         with self.lock:
+            self._known_files = set()
             self._save_state({"created_at": datetime.now().isoformat(), "batches": {}})
             logger.info("Queue has been completely reset.")
+
+    def retry_failed_batches(self) -> int:
+        with self.lock:
+            state = self._load_state()
+            count = 0
+            for b in state.get("batches", {}).values():
+                if b.get("status") == "failed":
+                    b["status"] = "pending"
+                    b["retry_count"] = 0
+                    b["error_message"] = None
+                    count += 1
+            if count > 0:
+                self._save_state(state)
+            return count
+
+    def clear_completed_batches(self) -> int:
+        with self.lock:
+            state = self._load_state()
+            batches = state.get("batches", {})
+            remaining = {k: v for k, v in batches.items() if v.get("status") != "completed"}
+            removed = len(batches) - len(remaining)
+            state["batches"] = remaining
+            if self._known_files is not None:
+                self._known_files = {f for b in remaining.values() for f in b.get("files", [])}
+            self._save_state(state)
+            return removed
 
     def get_statistics(self) -> dict:
         """Calculate counts for GUI status cards."""

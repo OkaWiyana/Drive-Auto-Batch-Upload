@@ -21,35 +21,29 @@ def setup_logging():
 
 async def main():
     setup_logging()
-    logger.info("==========================================")
-    logger.info("   GDrive Auto Uploader Agent Dimulai     ")
-    logger.info("==========================================")
+    logger.info("GDrive Auto Uploader Agent started")
 
-    # 1. Validasi konfigurasi
     folder_url = config.get_clean_folder_url()
     if not folder_url:
-        logger.error("GDRIVE_FOLDER_URL belum diset! Silakan masukkan tautan folder Google Drive di aplikasi.")
+        logger.error("GDRIVE_FOLDER_URL belum diset. Masukkan tautan folder Google Drive.")
         return
 
     logger.info(f"Target Google Drive Folder: {folder_url}")
     logger.info(f"Konfigurasi: {config.MAX_WORKERS} Tab | Batch Size: {config.BATCH_SIZE} File")
 
-    # 2. Inisialisasi komponen
     queue_manager = QueueManager()
     browser_pool = BrowserPool()
     scheduler = Scheduler(queue_manager, browser_pool)
 
     def on_new_files(files: list[Path]):
-        logger.info(f"Menambahkan {len(files)} file baru ke antrean...")
+        logger.info(f"Menambahkan {len(files)} file baru ke antrean")
         queue_manager.add_files(files)
 
     directory_scanner = DirectoryScanner(callback=on_new_files)
-
-    # 3. Pindai file yang ada di folder target
     directory_scanner.scan_existing()
-    directory_scanner.start_watching()
+    if getattr(config, "WATCHDOG_ENABLED", True):
+        directory_scanner.start_watching()
 
-    # 4. Jalankan Browser Pool & Scheduler
     try:
         await browser_pool.start()
         logger.info("Menjalankan worker upload paralel...")
@@ -64,7 +58,7 @@ async def main():
         scheduler.stop()
         directory_scanner.stop_watching()
         await browser_pool.stop()
-        logger.info("=== GDrive Agent Berhenti dengan Aman ===")
+        logger.info("GDrive Agent selesai")
 
 if __name__ == "__main__":
     if sys.platform == "win32":

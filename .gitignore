@@ -28,3 +28,5 @@ temp_repo/
 scratch/
 .DS_Store
 Thumbs.db
+
+design_renders/*

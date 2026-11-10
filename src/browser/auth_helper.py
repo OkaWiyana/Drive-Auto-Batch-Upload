@@ -28,7 +28,8 @@ class AuthHelper:
             browser_channel = config.BROWSER_CHANNEL
             context = None
             
-            for channel in [browser_channel, "chrome", "msedge", None]:
+            channels = list(dict.fromkeys([browser_channel, "chrome", "msedge", None]))
+            for channel in channels:
                 try:
                     kwargs = {
                         "user_data_dir": str(config.USER_DATA_DIR),

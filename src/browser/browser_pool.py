@@ -27,8 +27,9 @@ class BrowserPool:
         browser_channel = config.BROWSER_CHANNEL
         self.context = None
 
-        # Attempt to launch with preferred browser channel
-        for channel in [browser_channel, "chrome", "msedge", None]:
+        # Attempt to launch with preferred browser channel without duplicates
+        channels = list(dict.fromkeys([browser_channel, "chrome", "msedge", None]))
+        for channel in channels:
             try:
                 kwargs = {
                     "user_data_dir": str(config.USER_DATA_DIR),
