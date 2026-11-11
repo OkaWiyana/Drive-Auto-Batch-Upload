@@ -96,4 +96,7 @@ config = Settings()
 config.LOG_DIR.mkdir(parents=True, exist_ok=True)
 config.USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 for folder in config.get_target_folders():
-    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass

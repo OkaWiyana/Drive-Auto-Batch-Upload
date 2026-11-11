@@ -4,6 +4,7 @@ import json
 import time
 import subprocess
 import threading
+import webbrowser
 from pathlib import Path
 
 import customtkinter as ctk
@@ -81,6 +82,7 @@ class GDriveLauncher(ctk.CTk):
         self._process: subprocess.Popen | None = None
         self._log_thread: threading.Thread | None = None
         self._running = False
+        self._manual_stop = False
         self._start_time = None
         self._last_queue_sig = None
         self._active_tab = "dashboard"
@@ -1061,6 +1063,7 @@ class GDriveLauncher(ctk.CTk):
 
     def _launch_upload_worker(self):
         self._running = True
+        self._manual_stop = False
         self._start_time = time.time()
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
@@ -1095,6 +1098,7 @@ class GDriveLauncher(ctk.CTk):
         self._log_thread.start()
 
     def _stop_upload(self):
+        self._manual_stop = True
         if self._process and self._process.poll() is None:
             self._append_log("⚠️ Menghentikan agent...\n")
             self._process.terminate()
@@ -1108,12 +1112,199 @@ class GDriveLauncher(ctk.CTk):
     def _on_worker_finished(self):
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
-        self.dash_status_badge.configure(text="STATUS: BERHENTI", fg_color=BG_CARD_ALT)
-        self._append_log("⏹️ Agent berhenti\n")
 
         for w_data in self.worker_cards.values():
             w_data["batch"].configure(text="Menunggu tugas...", text_color=TEXT_DIM)
             w_data["badge"].configure(text="IDLE", fg_color=BG_CARD_ALT, text_color=TEXT_MUTED)
+
+        if self._manual_stop:
+            self.dash_status_badge.configure(text="STATUS: BERHENTI", fg_color=BG_CARD_ALT)
+            self._append_log("⏹️ Agent dihentikan oleh pengguna\n")
+            self._manual_stop = False
+            return
+
+        state = load_state()
+        batches = state.get("batches", {})
+        total_batches = len(batches)
+        pending_batches = sum(1 for b in batches.values() if b.get("status") in ["pending", "retrying", "processing"])
+        completed_batches = sum(1 for b in batches.values() if b.get("status") == "completed")
+        failed_batches = sum(1 for b in batches.values() if b.get("status") == "failed")
+        total_files = sum(len(b.get("files", [])) for b in batches.values())
+        done_files = sum(len(b.get("files", [])) for b in batches.values() if b.get("status") == "completed")
+
+        duration_str = "00:00:00"
+        if self._start_time:
+            elapsed = int(time.time() - self._start_time)
+            hrs, rem = divmod(elapsed, 3600)
+            mins, secs = divmod(rem, 60)
+            duration_str = f"{hrs:02d}:{mins:02d}:{secs:02d}"
+
+        if total_batches > 0 and pending_batches == 0:
+            self.dash_status_badge.configure(text="STATUS: SELESAI", fg_color=ACCENT_GREEN)
+            self._append_log(f"✨ Seluruh upload selesai ({done_files}/{total_files} file). Browser ditutup & agent berhenti.\n")
+            self._update_queue_ui(force=True)
+            self._show_upload_completed_dialog(
+                total_files=total_files,
+                done_files=done_files,
+                total_batches=total_batches,
+                done_batches=completed_batches,
+                failed_batches=failed_batches,
+                duration=duration_str,
+            )
+        else:
+            self.dash_status_badge.configure(text="STATUS: BERHENTI", fg_color=BG_CARD_ALT)
+            self._append_log("⏹️ Agent berhenti\n")
+
+    def _show_upload_completed_dialog(
+        self,
+        total_files: int,
+        done_files: int,
+        total_batches: int,
+        done_batches: int,
+        failed_batches: int,
+        duration: str,
+    ):
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("Proses Upload Selesai")
+        dialog.geometry("540x390")
+        dialog.resizable(False, False)
+        dialog.configure(fg_color=BG_MAIN)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        # Center on parent window
+        self.update_idletasks()
+        dx = max(0, self.winfo_x() + (self.winfo_width() - 540) // 2)
+        dy = max(0, self.winfo_y() + (self.winfo_height() - 390) // 2)
+        dialog.geometry(f"+{dx}+{dy}")
+
+        card = ctk.CTkFrame(dialog, fg_color=BG_CARD, corner_radius=12, border_color=BORDER_COLOR, border_width=1)
+        card.pack(fill="both", expand=True, padx=16, pady=16)
+
+        # Top pill badge & title
+        is_all_success = (failed_batches == 0)
+        badge_color = "#064E3B" if is_all_success else "#78350F"
+        badge_text_color = "#34D399" if is_all_success else "#FBBF24"
+        badge_text = "SELESAI (100% SUKSES)" if is_all_success else f"SELESAI ({failed_batches} BATCH GAGAL)"
+
+        header_row = ctk.CTkFrame(card, fg_color="transparent")
+        header_row.pack(fill="x", padx=20, pady=(18, 4))
+
+        ctk.CTkLabel(
+            header_row,
+            text=badge_text,
+            fg_color=badge_color,
+            text_color=badge_text_color,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            corner_radius=6,
+            padx=10,
+            pady=3,
+        ).pack(side="left")
+
+        title_text = "Seluruh Proses Upload Selesai" if is_all_success else "Upload Selesai dengan Catatan"
+        ctk.CTkLabel(
+            card,
+            text=title_text,
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color=TEXT_MAIN,
+        ).pack(anchor="w", padx=20, pady=(6, 2))
+
+        subtitle_text = (
+            "Semua tab browser otomatis ditutup dan agent background telah dihentikan secara aman."
+            if is_all_success
+            else f"Sebagian batch berhasil diunggah ({done_files}/{total_files} file). Browser telah ditutup."
+        )
+        ctk.CTkLabel(
+            card,
+            text=subtitle_text,
+            font=ctk.CTkFont(size=12),
+            text_color=TEXT_MUTED,
+            justify="left",
+            wraplength=480,
+        ).pack(anchor="w", padx=20, pady=(0, 14))
+
+        # Metrics 4-card grid
+        metrics_frame = ctk.CTkFrame(card, fg_color=BG_MAIN, corner_radius=10, border_color=BORDER_COLOR, border_width=1)
+        metrics_frame.pack(fill="x", padx=20, pady=(0, 14))
+        metrics_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+        def make_metric(col, label, val, color):
+            box = ctk.CTkFrame(metrics_frame, fg_color="transparent")
+            box.grid(row=0, column=col, padx=6, pady=10, sticky="nsew")
+            ctk.CTkLabel(box, text=label, font=ctk.CTkFont(size=10, weight="bold"), text_color=TEXT_DIM).pack()
+            ctk.CTkLabel(box, text=val, font=ctk.CTkFont(size=15, weight="bold"), text_color=color).pack(pady=(2, 0))
+
+        make_metric(0, "TOTAL FILE", f"{done_files}/{total_files}", ACCENT_GREEN if is_all_success else TEXT_MAIN)
+        make_metric(1, "BATCH SUKSES", f"{done_batches}/{total_batches}", TEXT_MAIN)
+        make_metric(2, "BATCH GAGAL", str(failed_batches), ACCENT_RED if failed_batches > 0 else TEXT_MUTED)
+        make_metric(3, "TOTAL DURASI", duration, ACCENT_BLUE)
+
+        # Drive Folder Info snippet
+        drive_url = self.entry_drive_url.get().strip()
+        if drive_url:
+            drive_info_frame = ctk.CTkFrame(card, fg_color=BG_INPUT, corner_radius=8)
+            drive_info_frame.pack(fill="x", padx=20, pady=(0, 14))
+            drive_short = drive_url if len(drive_url) <= 52 else (drive_url[:49] + "...")
+            ctk.CTkLabel(
+                drive_info_frame,
+                text=f"Tautan Drive: {drive_short}",
+                font=ctk.CTkFont(size=11),
+                text_color=TEXT_MUTED,
+                anchor="w",
+            ).pack(fill="x", padx=12, pady=7)
+
+        # Action Buttons
+        btn_row = ctk.CTkFrame(card, fg_color="transparent")
+        btn_row.pack(fill="x", padx=20, pady=(0, 16), side="bottom")
+
+        def do_close():
+            dialog.destroy()
+
+        def do_open_drive():
+            if drive_url:
+                webbrowser.open(drive_url)
+
+        def do_retry():
+            dialog.destroy()
+            self._retry_failed()
+
+        if failed_batches > 0:
+            btn_retry = ctk.CTkButton(
+                btn_row,
+                text="Ulangi Batch Gagal",
+                command=do_retry,
+                fg_color=ACCENT_AMBER,
+                hover_color="#D97706",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                height=36,
+                corner_radius=8,
+            )
+            btn_retry.pack(side="left", padx=(0, 8))
+
+        if drive_url:
+            btn_drive = ctk.CTkButton(
+                btn_row,
+                text="Buka Google Drive",
+                command=do_open_drive,
+                fg_color=ACCENT_BLUE,
+                hover_color=ACCENT_BLUE_HOVER,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                height=36,
+                corner_radius=8,
+            )
+            btn_drive.pack(side="left", padx=(0, 8))
+
+        btn_ok = ctk.CTkButton(
+            btn_row,
+            text="Selesai",
+            command=do_close,
+            fg_color=ACCENT_GREEN if is_all_success else BG_CARD_ALT,
+            hover_color="#059669" if is_all_success else "#334155",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            height=36,
+            corner_radius=8,
+        )
+        btn_ok.pack(side="right", fill="x", expand=True)
 
     def _reset_queue(self):
         if self._running:

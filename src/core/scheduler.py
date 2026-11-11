@@ -42,6 +42,7 @@ class Scheduler:
     async def run(self):
         logger.info(f"Upload Scheduler loop aktif. Max worker tab: {config.MAX_WORKERS}")
         self.is_running = True
+        empty_cycles = 0
 
         while self.is_running:
             spawned = False
@@ -55,18 +56,39 @@ class Scheduler:
                     self.active_workers += 1  # increment before create_task so the loop doesn't over-spawn
                     asyncio.create_task(self._worker(batch, worker_id))
                     spawned = True
+                    empty_cycles = 0
 
             if spawned:
                 await asyncio.sleep(0.1)
-            elif self.active_workers >= config.MAX_WORKERS:
+            elif self.active_workers > 0:
                 self.worker_freed_event.clear()
                 try:
                     await asyncio.wait_for(self.worker_freed_event.wait(), timeout=1.0)
                 except asyncio.TimeoutError:
                     pass
             else:
-                # No active batches and not at capacity
-                await asyncio.sleep(1.0)
+                # No active workers and no batch was spawned. Check if queue is finished.
+                stats = self.queue_manager.get_statistics()
+                if stats["total_batches"] > 0 and stats["pending_batches"] == 0 and stats["processing_batches"] == 0:
+                    # Brief verification pause to ensure all worker tasks and writes have settled
+                    await asyncio.sleep(0.5)
+                    stats = self.queue_manager.get_statistics()
+                    if stats["pending_batches"] == 0 and stats["processing_batches"] == 0 and self.active_workers == 0:
+                        logger.info(
+                            f"Semua batch selesai diproses! ({stats['completed_batches']}/{stats['total_batches']} sukses, "
+                            f"{stats['failed_batches']} gagal). Menghentikan scheduler..."
+                        )
+                        self.is_running = False
+                        break
+                elif stats["total_batches"] == 0:
+                    empty_cycles += 1
+                    if empty_cycles >= 5:
+                        logger.info("Tidak ada berkas/batch dalam antrean. Menghentikan scheduler...")
+                        self.is_running = False
+                        break
+                    await asyncio.sleep(1.0)
+                else:
+                    await asyncio.sleep(1.0)
 
     def stop(self):
         logger.info("Menghentikan Scheduler loop...")
